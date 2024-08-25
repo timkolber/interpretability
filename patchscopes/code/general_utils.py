@@ -40,7 +40,10 @@ class ModelAndTokenizer:
       ):
     if tokenizer is None:
       assert model_name is not None
-      tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, use_fast=use_fast)
+      if "vicuna" in model_name or "llama" in model_name:
+        tokenizer = transformers.LlamaTokenizer.from_pretrained(model_name, use_fast=use_fast)
+      else:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, use_fast=use_fast)
     if model is None:
       assert model_name is not None
       model = transformers.AutoModelForCausalLM.from_pretrained(
