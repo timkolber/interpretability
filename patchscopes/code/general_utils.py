@@ -53,12 +53,20 @@ class ModelAndTokenizer:
                 )
         if model is None:
             assert model_name is not None
-            model = transformers.AutoModelForCausalLM.from_pretrained(
-                model_name,
-                low_cpu_mem_usage=low_cpu_mem_usage,
-                torch_dtype=torch_dtype,
-                cache_dir=cache_dir,
-            )
+            if "t5" in model_name:
+                model = transformers.T5ForConditionalGeneration.from_pretrained(
+                    model_name,
+                    low_cpu_mem_usage=low_cpu_mem_usage,
+                    torch_dtype=torch_dtype,
+                    cache_dir=cache_dir,
+                )
+            else:
+                model = transformers.AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    low_cpu_mem_usage=low_cpu_mem_usage,
+                    torch_dtype=torch_dtype,
+                    cache_dir=cache_dir,
+                )
             if device is not None:
                 model.to(device)
             set_requires_grad(False, model)
@@ -69,7 +77,12 @@ class ModelAndTokenizer:
         self.layer_names = [
             n
             for n, _ in model.named_modules()
-            if (re.match(r"^(transformer|gpt_neox|model)\.(h|layers)\.\d+$", n))
+            if (
+                re.match(
+                    r"^(transformer|gpt_neox|model|encoder|decoder)\.(h|layers|block)\.[(layer)\.]?\d+$",
+                    n,
+                )
+            )
         ]
         self.num_layers = len(self.layer_names)
 

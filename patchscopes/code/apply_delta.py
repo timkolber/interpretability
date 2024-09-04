@@ -4,6 +4,7 @@ python3 apply_delta.py --base /path/to/model_weights/llama-13b --target stable-v
 
 The code was adopted from https://github.com/GanjinZero/RRHF/blob/main/apply_delta.py
 """
+
 import argparse
 
 import torch
@@ -14,15 +15,20 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 def apply_delta(base_model_path, target_model_path, delta_path):
     print("Loading base model")
     base = AutoModelForCausalLM.from_pretrained(
-        base_model_path, torch_dtype=torch.float16, low_cpu_mem_usage=True)
+        base_model_path, torch_dtype=torch.float16, low_cpu_mem_usage=True
+    )
 
     print("Loading delta")
-    delta = AutoModelForCausalLM.from_pretrained(delta_path, torch_dtype=torch.float16, low_cpu_mem_usage=True)
+    delta = AutoModelForCausalLM.from_pretrained(
+        delta_path, torch_dtype=torch.float16, low_cpu_mem_usage=True
+    )
     delta_tokenizer = AutoTokenizer.from_pretrained(delta_path)
 
     DEFAULT_PAD_TOKEN = "[PAD]"
     base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, use_fast=False)
-    num_new_tokens = base_tokenizer.add_special_tokens(dict(pad_token=DEFAULT_PAD_TOKEN))
+    num_new_tokens = base_tokenizer.add_special_tokens(
+        dict(pad_token=DEFAULT_PAD_TOKEN)
+    )
 
     base.resize_token_embeddings(len(base_tokenizer))
     input_embeddings = base.get_input_embeddings().weight.data
