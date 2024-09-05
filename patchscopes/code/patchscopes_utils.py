@@ -18,6 +18,7 @@ import torch
 import tqdm
 from general_utils import decode_tokens
 from general_utils import make_inputs
+from transformers import T5ForConditionalGeneration
 
 
 # ##############
@@ -627,10 +628,21 @@ def evaluate_patch_next_token_prediction(
 
     # first run the the model on without patching and get the results.
     inp_source = make_inputs(mt.tokenizer, [prompt_source], mt.device)
-    output_orig = mt.model(**inp_source, output_hidden_states=True)
+    if type(mt.model) == T5ForConditionalGeneration:
+        decoder_input_ids = mt.model._shift_right(inp_source["input_ids"])
+        output_orig = mt.model(
+            **inp_source, output_hidden_states=True, decoder_input_ids=decoder_input_ids
+        )
+    else:
+        output_orig = mt.model(**inp_source, output_hidden_states=True)
     dist_orig = torch.softmax(output_orig.logits[0, position_source, :], dim=0)
     _, answer_t_orig = torch.max(dist_orig, dim=0)
-    hidden_rep = output_orig["hidden_states"][layer_source + 1][0][position_source]
+    if type(mt.model) == T5ForConditionalGeneration:
+        hidden_rep = output_orig["decoder_hidden_states"][layer_source + 1][0][
+            position_source
+        ]
+    else:
+        hidden_rep = output_orig["hidden_states"][layer_source + 1][0][position_source]
     if transform is not None:
         hidden_rep = transform(hidden_rep)
 
@@ -648,7 +660,11 @@ def evaluate_patch_next_token_prediction(
         skip_final_ln=skip_final_ln,
         generation_mode=True,
     )
-    output = mt.model(**inp_target)
+    if type(mt.model) == T5ForConditionalGeneration:
+        decoder_input_ids = mt.model._shift_right(inp_source["input_ids"])
+        output = mt.model(**inp_source, decoder_input_ids=decoder_input_ids)
+    else:
+        output = mt.model(**inp_source)
     dist = torch.softmax(output.logits[0, position_prediction, :], dim=0)
     _, answer_t = torch.max(dist, dim=0)
 
