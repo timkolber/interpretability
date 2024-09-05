@@ -638,7 +638,7 @@ def evaluate_patch_next_token_prediction(
     dist_orig = torch.softmax(output_orig.logits[0, position_source, :], dim=0)
     _, answer_t_orig = torch.max(dist_orig, dim=0)
     if type(mt.model) == T5ForConditionalGeneration:
-        hidden_rep = output_orig["decoder_hidden_states"][layer_source + 1][0][
+        hidden_rep = output_orig["encoder_hidden_states"][layer_source + 1][0][
             position_source
         ]
     else:
@@ -648,6 +648,7 @@ def evaluate_patch_next_token_prediction(
 
     # now do a second run on prompt, while patching the input hidden state.
     hs_patch_config = {layer_target: [(position_target, hidden_rep)]}
+    print(hs_patch_config)
     if layer_source == layer_target == mt.num_layers - 1:
         skip_final_ln = True
     else:
@@ -661,10 +662,10 @@ def evaluate_patch_next_token_prediction(
         generation_mode=True,
     )
     if type(mt.model) == T5ForConditionalGeneration:
-        decoder_input_ids = mt.model._shift_right(inp_source["input_ids"])
-        output = mt.model(**inp_source, decoder_input_ids=decoder_input_ids)
+        decoder_input_ids = mt.model._shift_right(inp_target["input_ids"])
+        output = mt.model(**inp_target, decoder_input_ids=decoder_input_ids)
     else:
-        output = mt.model(**inp_source)
+        output = mt.model(**inp_target)
     dist = torch.softmax(output.logits[0, position_prediction, :], dim=0)
     _, answer_t = torch.max(dist, dim=0)
 
