@@ -605,6 +605,81 @@ def inspect(
     return output
 
 
+def evaluate_patch_t5(
+    mt,
+    prompt_source,
+    prompt_target,
+    layer_source,
+    layer_target,
+    position_source,
+    position_target,
+    module="hs",
+    position_prediction=-1,
+    transform=None,
+):
+    """Evaluate next token prediction."""
+    patch_from = "encoder_hidden_states"
+    if module != "hs":
+        raise ValueError("Module %s not yet supported", module)
+
+    # adjust position_target to be absolute rather than relative
+    inp_target = make_inputs(mt.tokenizer, [prompt_target], mt.device)
+    if position_target < 0:
+        position_target = len(inp_target["input_ids"][0]) + position_target
+
+    if layer_source >= int(mt.num_layers // 2):
+        patch_from = "decoder_hidden_states"
+        layer_source -= mt.num_layers
+
+    # first run the the model on without patching and get the results.
+    inp_source = make_inputs(mt.tokenizer, [prompt_source], mt.device)
+    if type(mt.model) == T5ForConditionalGeneration:
+        decoder_input_ids = mt.model._shift_right(inp_source["input_ids"])
+        output_orig = mt.model(
+            **inp_source, output_hidden_states=True, decoder_input_ids=decoder_input_ids
+        )
+    else:
+        output_orig = mt.model(**inp_source, output_hidden_states=True)
+    dist_orig = torch.softmax(output_orig.logits[0, position_source, :], dim=0)
+    _, answer_t_orig = torch.max(dist_orig, dim=0)
+    if type(mt.model) == T5ForConditionalGeneration:
+        hidden_rep = output_orig[patch_from][layer_source + 1][0][position_source]
+    else:
+        hidden_rep = output_orig["hidden_states"][layer_source + 1][0][position_source]
+    if transform is not None:
+        hidden_rep = transform(hidden_rep)
+
+    # now do a second run on prompt, while patching the input hidden state.
+    hs_patch_config = {layer_target: [(position_target, hidden_rep)]}
+    if layer_source == layer_target == mt.num_layers - 1:
+        skip_final_ln = True
+    else:
+        skip_final_ln = False
+    patch_hooks = mt.set_hs_patch_hooks(
+        mt.model,
+        hs_patch_config,
+        module=module,
+        patch_input=False,
+        skip_final_ln=skip_final_ln,
+        generation_mode=False,
+    )
+    if type(mt.model) == T5ForConditionalGeneration:
+        decoder_input_ids = mt.model._shift_right(inp_target["input_ids"])
+        output = mt.model(**inp_target, decoder_input_ids=decoder_input_ids)
+    else:
+        output = mt.model(**inp_target)
+    dist = torch.softmax(output.logits[0, position_prediction, :], dim=0)
+    _, answer_t = torch.max(dist, dim=0)
+
+    # remove patching hooks
+    remove_hooks(patch_hooks)
+
+    prec_1 = (answer_t == answer_t_orig).detach().cpu().item()
+    surprisal = -torch.log(dist_orig[answer_t]).detach().cpu().numpy()
+
+    return answer_t
+
+
 def evaluate_patch_next_token_prediction(
     mt,
     prompt_source,
