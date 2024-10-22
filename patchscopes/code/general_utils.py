@@ -20,11 +20,11 @@ https://github.com/kmeng01/rome/blob/bef95a6afd2ca15d794bdd4e3ee0f24283f9b996/
 """
 
 import re
+from typing import Dict, List
 
 import torch
 import transformers
-from transformers import PreTrainedTokenizer
-from typing import List, Tuple, Dict, Union, Optional
+from transformers import AutoModel, PreTrainedTokenizer
 
 
 class ModelAndTokenizer:
@@ -53,13 +53,23 @@ class ModelAndTokenizer:
                 )
         if model is None:
             assert model_name is not None
-            if "t5" in model_name:
+            if "GLM" in model_name:
+                model = AutoModel.from_pretrained(
+                    model_name,
+                    low_cpu_mem_usage=low_cpu_mem_usage,
+                    torch_dtype=torch_dtype,
+                    cache_dir=cache_dir,
+                    trust_remote_code=True,
+                    revision="main",
+                )
+            elif "t5" in model_name:
                 model = transformers.T5ForConditionalGeneration.from_pretrained(
                     model_name,
                     low_cpu_mem_usage=low_cpu_mem_usage,
                     torch_dtype=torch_dtype,
                     cache_dir=cache_dir,
                 )
+
             else:
                 model = transformers.AutoModelForCausalLM.from_pretrained(
                     model_name,
@@ -79,7 +89,7 @@ class ModelAndTokenizer:
             for n, _ in model.named_modules()
             if (
                 re.match(
-                    r"^(transformer|gpt_neox|model|encoder|decoder)\.(h|layers|block)\.[(layer)\.]?\d+$",
+                    r"^(transformer|gpt_neox|model|encoder)\.(h|layers|block)\.[(layer)\.]?\d+$",
                     n,
                 )
             )

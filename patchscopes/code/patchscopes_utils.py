@@ -16,10 +16,8 @@
 import numpy as np
 import torch
 import tqdm
-from general_utils import decode_tokens
-from general_utils import make_inputs
+from general_utils import ModelAndTokenizer, decode_tokens, make_inputs
 from transformers import T5ForConditionalGeneration
-
 
 # ##############
 #
@@ -28,7 +26,7 @@ from transformers import T5ForConditionalGeneration
 # ##############
 
 
-def set_hs_patch_hooks_t5(
+def set_hs_patch_hooks_glm(
     model,
     hs_patch_config,
     module="hs",  # mlp, attn
@@ -69,7 +67,6 @@ def set_hs_patch_hooks_t5(
             else:
                 # output[0]: (batch, sequence, hidden_state)
                 output_len = len(output[0][0])
-
             if generation_mode and output_len == 1:
                 return
             for position_, hs_ in position_hs:
@@ -94,15 +91,15 @@ def set_hs_patch_hooks_t5(
         if patch_input:
             if module == "hs":
                 hooks.append(
-                    model.decoder.block[i].register_forward_pre_hook(patch_hook)
+                    model.encoder.block[i].register_forward_pre_hook(patch_hook)
                 )
             elif module == "mlp":
                 hooks.append(
-                    model.decoder.block[i].mlp.register_forward_pre_hook(patch_hook)
+                    model.encoder.block[i].mlp.register_forward_pre_hook(patch_hook)
                 )
             elif module == "attn":
                 hooks.append(
-                    model.decoder.block[i].self_attn.register_forward_pre_hook(
+                    model.encoder.block[i].self_attn.register_forward_pre_hook(
                         patch_hook
                     )
                 )
@@ -113,9 +110,9 @@ def set_hs_patch_hooks_t5(
             # model, the final layer norm is not needed because it was already applied
             # (assuming that the representation for patching was obtained by
             # setting output_hidden_states to True).
-            if skip_final_ln and i == len(model.decoder.block) - 1 and module == "hs":
+            if skip_final_ln and i == len(model.encoder.block) - 1 and module == "hs":
                 hooks.append(
-                    model.decoder.final_layer_norm.register_forward_hook(
+                    model.encoder.final_layer_norm.register_forward_hook(
                         patch_hs(
                             f"patch_hs_{i}_skip_ln",
                             hs_patch_config[i],
@@ -127,15 +124,15 @@ def set_hs_patch_hooks_t5(
             else:
                 if module == "hs":
                     hooks.append(
-                        model.decoder.block[i].register_forward_hook(patch_hook)
+                        model.encoder.block[i].register_forward_hook(patch_hook)
                     )
                 elif module == "mlp":
                     hooks.append(
-                        model.decoder.block[i].mlp.register_forward_hook(patch_hook)
+                        model.encoder.block[i].mlp.register_forward_hook(patch_hook)
                     )
                 elif module == "attn":
                     hooks.append(
-                        model.decoder.block[i].self_attn.register_forward_hook(
+                        model.encoder.block[i].self_attn.register_forward_hook(
                             patch_hook
                         )
                     )
@@ -558,7 +555,10 @@ def inspect(
 
     # Single prediction / generation
     if verbose:
-        print("prompt:", [mt.tokenizer.decode(x) for x in inp_source["input_ids"][0]])
+        print(
+            "prompt:",
+            [mt.tokenizer.decode(x) for x in inp_source["input_ids"][0]],
+        )
         print(
             f"patching position {position_target} with the hidden state from layer"
             f" {layer_source} at position {position_source}."
@@ -605,79 +605,135 @@ def inspect(
     return output
 
 
-def evaluate_patch_t5(
-    mt,
-    prompt_source,
-    prompt_target,
-    layer_source,
-    layer_target,
-    position_source,
-    position_target,
-    module="hs",
-    position_prediction=-1,
-    transform=None,
+def evaluate_patch_glm(
+    glm_mt: ModelAndTokenizer,
+    generation_mt: ModelAndTokenizer,
+    how: str,
+    layer_source: int,
+    layer_target: int,
+    position_source: int,
+    position_target: int,
+    source_graph: str = None,
+    source_text: str = None,
+    target_graph: str = None,
+    target_text: str = None,
+    module: str = "hs",
+    gen_len: int = 20,
 ):
-    """Evaluate next token prediction."""
-    patch_from = "encoder_hidden_states"
+    """Investigate GLM"""
     if module != "hs":
         raise ValueError("Module %s not yet supported", module)
 
-    # adjust position_target to be absolute rather than relative
-    inp_target = make_inputs(mt.tokenizer, [prompt_target], mt.device)
+    input_data_source = glm_mt.model.encoder.data_processor.encode_graph(
+        tokenizer=glm_mt.tokenizer,
+        g=source_graph,
+        text=source_text,
+        how=how,
+    )
+    if target_graph:
+        input_data_target = glm_mt.model.encoder.data_processor.encode_graph(
+            tokenizer=glm_mt.tokenizer,
+            g=target_graph,
+            text=target_text,
+            how=how,
+        )
+        inp_target = glm_mt.model.encoder.data_processor.to_batch(
+            data_instances=[input_data_target],
+            tokenizer=glm_mt.tokenizer,
+            max_seq_len=None,
+            device=glm_mt.device,
+        )
+    else:
+        inp_target = make_inputs(glm_mt.tokenizer, [target_text], glm_mt.device)
+
+    inp_source = glm_mt.model.encoder.data_processor.to_batch(
+        data_instances=[input_data_source],
+        tokenizer=glm_mt.tokenizer,
+        max_seq_len=None,
+        device=glm_mt.device,
+    )
+
     if position_target < 0:
         position_target = len(inp_target["input_ids"][0]) + position_target
 
-    if layer_source >= int(mt.num_layers // 2):
-        patch_from = "decoder_hidden_states"
-        layer_source -= mt.num_layers
-
     # first run the the model on without patching and get the results.
-    inp_source = make_inputs(mt.tokenizer, [prompt_source], mt.device)
-    if type(mt.model) == T5ForConditionalGeneration:
-        decoder_input_ids = mt.model._shift_right(inp_source["input_ids"])
-        output_orig = mt.model(
-            **inp_source, output_hidden_states=True, decoder_input_ids=decoder_input_ids
-        )
-    else:
-        output_orig = mt.model(**inp_source, output_hidden_states=True)
-    dist_orig = torch.softmax(output_orig.logits[0, position_source, :], dim=0)
-    _, answer_t_orig = torch.max(dist_orig, dim=0)
-    if type(mt.model) == T5ForConditionalGeneration:
-        hidden_rep = output_orig[patch_from][layer_source + 1][0][position_source]
-    else:
-        hidden_rep = output_orig["hidden_states"][layer_source + 1][0][position_source]
-    if transform is not None:
-        hidden_rep = transform(hidden_rep)
+    glm_outputs = glm_mt.model(**inp_source, output_hidden_states=True)
+    hidden_rep = [
+        glm_outputs["hidden_states"][layer + 1][0] for layer in range(glm_mt.num_layers)
+    ]
 
     # now do a second run on prompt, while patching the input hidden state.
-    hs_patch_config = {layer_target: [(position_target, hidden_rep)]}
-    if layer_source == layer_target == mt.num_layers - 1:
+
+    hs_patch_config = {
+        layer_target: [
+            (
+                position_target,
+                hidden_rep[layer_source][position_source],
+            )
+        ]
+    }
+    if layer_source == layer_target == glm_mt.num_layers - 1:
         skip_final_ln = True
     else:
         skip_final_ln = False
-    patch_hooks = mt.set_hs_patch_hooks(
-        mt.model,
+    patch_hooks = generation_mt.set_hs_patch_hooks(
+        generation_mt.model,
         hs_patch_config,
         module=module,
         patch_input=False,
+        generation_mode=True,
         skip_final_ln=skip_final_ln,
-        generation_mode=False,
     )
-    if type(mt.model) == T5ForConditionalGeneration:
-        decoder_input_ids = mt.model._shift_right(inp_target["input_ids"])
-        output = mt.model(**inp_target, decoder_input_ids=decoder_input_ids)
-    else:
-        output = mt.model(**inp_target)
-    dist = torch.softmax(output.logits[0, position_prediction, :], dim=0)
-    _, answer_t = torch.max(dist, dim=0)
+    output_toks = generation_mt.model.generate(
+        inp_target["input_ids"],
+        max_new_tokens=20,
+    )[0]
 
-    # remove patching hooks
+    output = generation_mt.tokenizer.decode(output_toks)
+
     remove_hooks(patch_hooks)
 
-    prec_1 = (answer_t == answer_t_orig).detach().cpu().item()
-    surprisal = -torch.log(dist_orig[answer_t]).detach().cpu().numpy()
+    return output
 
-    return answer_t
+
+def evaluate_patch_glm_accuracy(
+    glm_mt: ModelAndTokenizer,
+    generation_mt: ModelAndTokenizer,
+    how: str,
+    position_source: int,
+    position_target: int,
+    target_label: str,
+    source_graph: str = None,
+    source_text: str = None,
+    target_graph: str = None,
+    target_text: str = None,
+    module: str = "hs",
+    gen_len: int = 20,
+):
+    """Investigate GLM"""
+
+    sum_hits = 0
+    for layer_source in range(glm_mt.num_layers):
+        for layer_target in range(generation_mt.num_layers):
+            output = evaluate_patch_glm(
+                glm_mt,
+                generation_mt,
+                how,
+                layer_source,
+                layer_target,
+                position_source,
+                position_target,
+                source_graph,
+                source_text,
+                target_graph,
+                target_text,
+                module,
+                gen_len,
+            )
+            if target_label in output:
+                sum_hits += 1
+                break
+    return sum_hits / glm_mt.num_layers
 
 
 def evaluate_patch_next_token_prediction(
@@ -706,7 +762,9 @@ def evaluate_patch_next_token_prediction(
     if type(mt.model) == T5ForConditionalGeneration:
         decoder_input_ids = mt.model._shift_right(inp_source["input_ids"])
         output_orig = mt.model(
-            **inp_source, output_hidden_states=True, decoder_input_ids=decoder_input_ids
+            **inp_source,
+            output_hidden_states=True,
+            decoder_input_ids=decoder_input_ids,
         )
     else:
         output_orig = mt.model(**inp_source, output_hidden_states=True)
@@ -723,7 +781,6 @@ def evaluate_patch_next_token_prediction(
 
     # now do a second run on prompt, while patching the input hidden state.
     hs_patch_config = {layer_target: [(position_target, hidden_rep)]}
-    print(hs_patch_config)
     if layer_source == layer_target == mt.num_layers - 1:
         skip_final_ln = True
     else:
@@ -736,7 +793,7 @@ def evaluate_patch_next_token_prediction(
         skip_final_ln=skip_final_ln,
         generation_mode=True,
     )
-    if type(mt.model) == T5ForConditionalGeneration:
+    if isinstance(mt.model, T5ForConditionalGeneration):
         decoder_input_ids = mt.model._shift_right(inp_target["input_ids"])
         output = mt.model(**inp_target, decoder_input_ids=decoder_input_ids)
     else:
@@ -881,7 +938,12 @@ def set_hs_patch_hooks_gptj_batch(
         if patch_input:
             hooks.append(
                 model.transformer.h[i].register_forward_pre_hook(
-                    patch_hs(f"patch_hs_{i}", item, patch_input, generation_mode)
+                    patch_hs(
+                        f"patch_hs_{i}",
+                        item,
+                        patch_input,
+                        generation_mode,
+                    )
                 )
             )
         else:
@@ -903,7 +965,12 @@ def set_hs_patch_hooks_gptj_batch(
             else:
                 hooks.append(
                     model.transformer.h[i].register_forward_hook(
-                        patch_hs(f"patch_hs_{i}", item, patch_input, generation_mode)
+                        patch_hs(
+                            f"patch_hs_{i}",
+                            item,
+                            patch_input,
+                            generation_mode,
+                        )
                     )
                 )
 
@@ -982,7 +1049,12 @@ def set_hs_patch_hooks_llama_batch(
         if patch_input:
             hooks.append(
                 model.model.layers[i].register_forward_pre_hook(
-                    patch_hs(f"patch_hs_{i}", item, patch_input, generation_mode)
+                    patch_hs(
+                        f"patch_hs_{i}",
+                        item,
+                        patch_input,
+                        generation_mode,
+                    )
                 )
             )
         else:
@@ -994,14 +1066,22 @@ def set_hs_patch_hooks_llama_batch(
                 hooks.append(
                     model.model.norm.register_forward_hook(
                         patch_hs(
-                            f"patch_hs_{i}_skip_ln", item, patch_input, generation_mode
+                            f"patch_hs_{i}_skip_ln",
+                            item,
+                            patch_input,
+                            generation_mode,
                         )
                     )
                 )
             else:
                 hooks.append(
                     model.model.layers[i].register_forward_hook(
-                        patch_hs(f"patch_hs_{i}", item, patch_input, generation_mode)
+                        patch_hs(
+                            f"patch_hs_{i}",
+                            item,
+                            patch_input,
+                            generation_mode,
+                        )
                     )
                 )
 
@@ -1097,7 +1177,11 @@ def evaluate_patch_next_token_prediction_batch(
         # ]
 
         dist = torch.softmax(
-            output.logits[np.array(range(batch_size)), position_prediction_batch, :],
+            output.logits[
+                np.array(range(batch_size)),
+                position_prediction_batch,
+                :,
+            ],
             dim=-1,
         )
         _, answer_t = torch.max(dist, dim=-1)
