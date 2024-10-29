@@ -618,7 +618,7 @@ def evaluate_patch_glm(
     target_graph: str = None,
     target_text: str = None,
     module: str = "hs",
-    gen_len: int = 20,
+    gen_len: int = 10,
 ):
     """Investigate GLM"""
     if module != "hs":
@@ -686,7 +686,7 @@ def evaluate_patch_glm(
     )
     output_toks = generation_mt.model.generate(
         inp_target["input_ids"],
-        max_new_tokens=20,
+        max_new_tokens=gen_len,
     )[0]
 
     output = generation_mt.tokenizer.decode(output_toks)

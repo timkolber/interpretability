@@ -61,6 +61,7 @@ class ModelAndTokenizer:
                     cache_dir=cache_dir,
                     trust_remote_code=True,
                     revision="main",
+                    device_map="auto",
                 )
             elif "t5" in model_name:
                 model = transformers.T5ForConditionalGeneration.from_pretrained(
@@ -68,6 +69,7 @@ class ModelAndTokenizer:
                     low_cpu_mem_usage=low_cpu_mem_usage,
                     torch_dtype=torch_dtype,
                     cache_dir=cache_dir,
+                    device_map="auto",
                 )
 
             else:
@@ -76,6 +78,7 @@ class ModelAndTokenizer:
                     low_cpu_mem_usage=low_cpu_mem_usage,
                     torch_dtype=torch_dtype,
                     cache_dir=cache_dir,
+                    device_map="auto",
                 )
             if device is not None:
                 model.to(device)
