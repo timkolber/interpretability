@@ -9,7 +9,7 @@ import torch
 from general_utils import (
     ModelAndTokenizer,
 )
-from patchscopes_utils import set_hs_patch_hooks_glm
+from patchscopes_utils import evaluate_patch_t5_accuracy, set_hs_patch_hooks_glm
 from tqdm import tqdm
 
 from data.load_data import load_data
@@ -17,7 +17,7 @@ from interpretability.patchscopes.code.patchscopes_utils import (
     evaluate_patch_glm_accuracy,
 )
 from GraphLanguageModels.models.graph_T5.classifier import GraphT5Classifier
-from transformers import AutoModel
+from transformers import AutoModel, T5EncoderModel
 
 print(torch.cuda.is_available())
 
@@ -43,7 +43,7 @@ os.environ["HF_HOME"] = "/home/students/kolber/seminars/kolber/.cache"
 
 # Load model
 
-glm_model_name = "plenz/GLM-t5-small"
+encoding_model_name = "google-t5/t5-small"
 generation_model_name = "google-t5/t5-small"
 
 def load_finetuned_model(model_path):
@@ -71,26 +71,23 @@ def prepare_model_and_tokenizer(model_name, torch_dtype=None, fine_tuned_path=No
     mt.model.eval()
     return mt
 
-glm_mt = prepare_model_and_tokenizer(glm_model_name, fine_tuned_path=None)
+encoding_model = T5EncoderModel.from_pretrained(encoding_model_name).to("cuda" if torch.cuda.is_available() else "cpu")
+encoding_mt = ModelAndTokenizer(model=encoding_model, model_name=encoding_model_name, low_cpu_mem_usage=True, device="cuda" if torch.cuda.is_available() else "cpu")
 generation_mt = prepare_model_and_tokenizer(generation_model_name)
 
 triplet_func_to_idx = {"subject": 0, "relation": 1, "object": 2}
 
 records = []
-print(glm_mt.device)
-print(generation_mt.device)
-print(glm_mt.model.device)
-print(generation_mt.model.device)
 
 for radius in tqdm(range(1, 6)):
     for mask_triplet_element in triplet_func_to_idx.keys():
         split = "test"
         data = load_data(split, radius, mask_triplet_element)
         for datapoint in tqdm(data):
-            accuracy = evaluate_patch_glm_accuracy(
-                glm_mt=glm_mt,
+            accuracy = evaluate_patch_t5_accuracy(
+                encoding_mt=encoding_mt,
                 generation_mt=generation_mt,
-                source_graph=datapoint["graph"],
+                source_text=str(datapoint["graph"]),
                 target_text=datapoint["target_prompt"],
                 how="global",
                 position_source=datapoint["source_position"],
@@ -107,4 +104,4 @@ for radius in tqdm(range(1, 6)):
 
 
 results = pd.DataFrame.from_records(records)
-results.to_excel("results_bl.xlsx")
+results.to_excel("results_bl_llm.xlsx")

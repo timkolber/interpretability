@@ -604,6 +604,70 @@ def inspect(
 
     return output
 
+def evaluate_patch_t5(
+    encoding_mt: ModelAndTokenizer,
+    generation_mt: ModelAndTokenizer,
+    how: str,
+    layer_source: int,
+    layer_target: int,
+    position_source: int,
+    position_target: int,
+    source_graph: str = None,
+    source_text: str = None,
+    target_graph: str = None,
+    target_text: str = None,
+    module: str = "hs",
+    gen_len: int = 10,
+):
+    if module != "hs":
+        raise ValueError("Module %s not yet supported", module)
+
+    inp_source = make_inputs(encoding_mt.tokenizer, [source_text], encoding_mt.device)
+    inp_target = make_inputs(encoding_mt.tokenizer, [target_text], encoding_mt.device)
+
+
+    if position_target < 0:
+        position_target = len(inp_target["input_ids"][0]) + position_target
+
+    # first run the the model on without patching and get the results.
+    encoding_mt_outputs = encoding_mt.model(**inp_source, output_hidden_states=True)
+    hidden_rep = [
+        encoding_mt_outputs["hidden_states"][layer + 1][0] for layer in range(encoding_mt.num_layers)
+    ]
+
+    # now do a second run on prompt, while patching the input hidden state.
+
+    hs_patch_config = {
+        layer_target: [
+            (
+                position_target,
+                hidden_rep[layer_source][position_source],
+            )
+        ]
+    }
+    if layer_source == layer_target == encoding_mt.num_layers - 1:
+        skip_final_ln = True
+    else:
+        skip_final_ln = False
+    patch_hooks = generation_mt.set_hs_patch_hooks(
+        generation_mt.model,
+        hs_patch_config,
+        module=module,
+        patch_input=False,
+        generation_mode=True,
+        skip_final_ln=skip_final_ln,
+    )
+    output_toks = generation_mt.model.generate(
+        inp_target["input_ids"],
+        max_new_tokens=gen_len,
+    )[0]
+
+    output = generation_mt.tokenizer.decode(output_toks)
+
+    remove_hooks(patch_hooks)
+
+    return output
+
 
 def evaluate_patch_glm(
     glm_mt: ModelAndTokenizer,
@@ -730,10 +794,52 @@ def evaluate_patch_glm_accuracy(
                 module,
                 gen_len,
             )
-            if target_label in output:
+            if output is None or target_label is None:
+                continue
+            elif target_label in output:
                 sum_hits += 1
                 break
     return sum_hits / glm_mt.num_layers
+
+def evaluate_patch_t5_accuracy(
+    encoding_mt: ModelAndTokenizer,
+    generation_mt: ModelAndTokenizer,
+    how: str,
+    position_source: int,
+    position_target: int,
+    target_label: str,
+    source_graph: str = None,
+    source_text: str = None,
+    target_graph: str = None,
+    target_text: str = None,
+    module: str = "hs",
+    gen_len: int = 20,
+):
+    sum_hits = 0
+    for layer_source in range(encoding_mt.num_layers):
+        for layer_target in range(generation_mt.num_layers):
+            output = evaluate_patch_t5(
+                encoding_mt,
+                generation_mt,
+                how,
+                layer_source,
+                layer_target,
+                position_source,
+                position_target,
+                source_graph,
+                source_text,
+                target_graph,
+                target_text,
+                module,
+                gen_len,
+            )
+            if output is None or target_label is None:
+                continue
+            elif target_label in output:
+                sum_hits += 1
+                break
+    return sum_hits / encoding_mt.num_layers
+
 
 
 def evaluate_patch_next_token_prediction(

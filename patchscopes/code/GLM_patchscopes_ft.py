@@ -71,7 +71,7 @@ def prepare_model_and_tokenizer(model_name, torch_dtype=None, fine_tuned_path=No
     mt.model.eval()
     return mt
 
-glm_mt = prepare_model_and_tokenizer(glm_model_name, fine_tuned_path=None)
+glm_mt = prepare_model_and_tokenizer(glm_model_name, fine_tuned_path="/home/students/kolber/Investigating-GLM-hidden-states/checkpoints/best_epoch_t5encoder")
 generation_mt = prepare_model_and_tokenizer(generation_model_name)
 
 triplet_func_to_idx = {"subject": 0, "relation": 1, "object": 2}
@@ -107,4 +107,4 @@ for radius in tqdm(range(1, 6)):
 
 
 results = pd.DataFrame.from_records(records)
-results.to_excel("results_bl.xlsx")
+results.to_excel("results_ft.xlsx")
